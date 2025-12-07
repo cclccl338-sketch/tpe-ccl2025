@@ -1,8 +1,7 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Activity, AppState, DayPlan, MealType, PackingItem, ShortlistItem, TransportType, ActivityCategory } from './types';
+import { Activity, AppState, DayPlan, MealType, PackingItem, ShortlistItem, TransportType, ActivityCategory, TransportLeg } from './types';
 import { generateInitialItinerary, START_DATE, END_DATE, DEFAULT_EXCHANGE_RATE } from './constants';
-import { IconCalendar, IconList, IconWeather, IconPlus, IconTrash, IconMap, IconCheck, IconFlight, IconSearch, IconExternal, IconShare, IconPencil } from './components/Icons';
+import { IconCalendar, IconList, IconWeather, IconPlus, IconTrash, IconMap, IconCheck, IconFlight, IconSearch, IconExternal, IconShare, IconPencil, IconCar } from './components/Icons';
 import { searchPlace, getWeatherAdvice } from './services/geminiService';
 
 // --- Utility Components ---
@@ -69,23 +68,13 @@ const VoyageDashboard: React.FC<{
     const flightCostMYR = (appState.preDeparture.flightCostMYR || 0) + (appState.preDeparture.returnFlightCostMYR || 0);
     const flightCostTWD = flightCostMYR / appState.exchangeRate;
 
-    // Arrival Transfer
-    let arrivalCostTWD = 0;
-    if (appState.preDeparture.arrivalTransportCurrency === 'MYR') {
-        arrivalCostTWD = (appState.preDeparture.arrivalTransportCost || 0) / appState.exchangeRate;
-    } else {
-        arrivalCostTWD = (appState.preDeparture.arrivalTransportCost || 0);
-    }
+    // 3. Transfers Cost
+    const transfersCostTWD = appState.preDeparture.transfers.reduce((sum, t) => {
+        if (t.currency === 'MYR') return sum + (t.cost / appState.exchangeRate);
+        return sum + t.cost;
+    }, 0);
 
-    // Departure Transfer
-    let departureCostTWD = 0;
-    if (appState.preDeparture.departureTransportCurrency === 'MYR') {
-        departureCostTWD = (appState.preDeparture.departureTransportCost || 0) / appState.exchangeRate;
-    } else {
-        departureCostTWD = (appState.preDeparture.departureTransportCost || 0);
-    }
-
-    return itineraryCost + flightCostTWD + arrivalCostTWD + departureCostTWD;
+    return itineraryCost + flightCostTWD + transfersCostTWD;
   }, [appState.itinerary, appState.preDeparture, appState.exchangeRate]);
 
   const updatePreDeparture = (field: keyof typeof appState.preDeparture, value: any) => {
@@ -94,6 +83,39 @@ const VoyageDashboard: React.FC<{
         preDeparture: { ...prev.preDeparture, [field]: value }
     }));
   }
+
+  const updateTransfer = (id: string, field: keyof TransportLeg, value: any) => {
+      setAppState(prev => ({
+          ...prev,
+          preDeparture: {
+              ...prev.preDeparture,
+              transfers: prev.preDeparture.transfers.map(t => t.id === id ? { ...t, [field]: value } : t)
+          }
+      }));
+  };
+
+  const addTransfer = () => {
+      setAppState(prev => ({
+          ...prev,
+          preDeparture: {
+              ...prev.preDeparture,
+              transfers: [
+                  ...prev.preDeparture.transfers,
+                  { id: Date.now().toString(), label: 'New Transfer', method: '', cost: 0, currency: 'TWD' }
+              ]
+          }
+      }));
+  };
+
+  const removeTransfer = (id: string) => {
+      setAppState(prev => ({
+          ...prev,
+          preDeparture: {
+              ...prev.preDeparture,
+              transfers: prev.preDeparture.transfers.filter(t => t.id !== id)
+          }
+      }));
+  };
 
   const toggleCurrency = (val: 'TWD' | 'MYR') => {
       setAppState(prev => ({ ...prev, displayCurrency: val }));
@@ -119,7 +141,7 @@ const VoyageDashboard: React.FC<{
       <div className="bg-white p-6 rounded-2xl shadow-clean border border-brand-border">
           <h3 className="text-lg font-display font-bold text-brand-dark mb-5 flex items-center gap-2">
             <span className="p-2 bg-brand-light text-brand-dark rounded-lg"><IconFlight className="w-4 h-4"/></span>
-            Flights & Logistics
+            Flights
           </h3>
           
           <div className="space-y-4">
@@ -164,63 +186,57 @@ const VoyageDashboard: React.FC<{
                     </div>
                  </div>
               </div>
+          </div>
 
-              {/* Transfers */}
-              <div className="space-y-3 pt-2">
-                  <h4 className="text-xs font-bold text-brand-secondary uppercase tracking-wide">Airport Transfers</h4>
-                  
-                  {/* Arrival */}
-                  <div className="bg-brand-light/50 p-4 rounded-xl border border-brand-border flex flex-col gap-2">
-                      <label className="text-[10px] text-brand-secondary font-bold uppercase tracking-wider">Arrival (To City)</label>
-                      <input 
-                        className="w-full bg-white border border-brand-border rounded-lg px-3 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                        placeholder="e.g. HSR to Taipei Main"
-                        value={appState.preDeparture.arrivalTransportInfo}
-                        onChange={(e) => updatePreDeparture('arrivalTransportInfo', e.target.value)}
-                      />
-                      <div className="flex gap-2">
-                         <div className="relative flex-1">
-                            <input 
-                                type="number" 
-                                placeholder="0"
-                                className="w-full bg-white border border-brand-border rounded-lg pl-3 pr-20 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                                value={appState.preDeparture.arrivalTransportCost || ''}
-                                onChange={(e) => updatePreDeparture('arrivalTransportCost', parseFloat(e.target.value))}
-                            />
-                            <div className="absolute right-1 top-1 bottom-1 flex bg-brand-light rounded-md p-0.5">
-                                <button onClick={() => updatePreDeparture('arrivalTransportCurrency', 'TWD')} className={`px-2 text-[10px] font-bold rounded-md transition-colors ${appState.preDeparture.arrivalTransportCurrency === 'TWD' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>NT$</button>
-                                <button onClick={() => updatePreDeparture('arrivalTransportCurrency', 'MYR')} className={`px-2 text-[10px] font-bold rounded-md transition-colors ${appState.preDeparture.arrivalTransportCurrency === 'MYR' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>RM</button>
-                            </div>
-                         </div>
-                      </div>
-                  </div>
-
-                  {/* Departure */}
-                  <div className="bg-brand-light/50 p-4 rounded-xl border border-brand-border flex flex-col gap-2">
-                      <label className="text-[10px] text-brand-secondary font-bold uppercase tracking-wider">Departure (To Airport)</label>
-                      <input 
-                        className="w-full bg-white border border-brand-border rounded-lg px-3 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                        placeholder="e.g. Taxi / Uber"
-                        value={appState.preDeparture.departureTransportInfo}
-                        onChange={(e) => updatePreDeparture('departureTransportInfo', e.target.value)}
-                      />
-                      <div className="flex gap-2">
-                         <div className="relative flex-1">
-                            <input 
-                                type="number" 
-                                placeholder="0"
-                                className="w-full bg-white border border-brand-border rounded-lg pl-3 pr-20 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                                value={appState.preDeparture.departureTransportCost || ''}
-                                onChange={(e) => updatePreDeparture('departureTransportCost', parseFloat(e.target.value))}
-                            />
-                            <div className="absolute right-1 top-1 bottom-1 flex bg-brand-light rounded-md p-0.5">
-                                <button onClick={() => updatePreDeparture('departureTransportCurrency', 'TWD')} className={`px-2 text-[10px] font-bold rounded-md transition-colors ${appState.preDeparture.departureTransportCurrency === 'TWD' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>NT$</button>
-                                <button onClick={() => updatePreDeparture('departureTransportCurrency', 'MYR')} className={`px-2 text-[10px] font-bold rounded-md transition-colors ${appState.preDeparture.departureTransportCurrency === 'MYR' ? 'bg-white shadow-sm' : 'text-brand-secondary'}`}>RM</button>
-                            </div>
-                         </div>
-                      </div>
-                  </div>
-              </div>
+          <div className="mt-8">
+               <div className="flex justify-between items-center mb-4">
+                  <h3 className="text-lg font-display font-bold text-brand-dark flex items-center gap-2">
+                    <span className="p-2 bg-brand-light text-brand-dark rounded-lg"><IconCar className="w-4 h-4"/></span>
+                    Logistics / Transfers
+                  </h3>
+                  <Button variant="ghost" onClick={addTransfer} className="text-xs px-2 py-1 h-auto"><IconPlus className="w-4 h-4"/> Add</Button>
+               </div>
+               
+               <div className="space-y-3">
+                   {appState.preDeparture.transfers.map((leg) => (
+                       <div key={leg.id} className="bg-brand-light/30 p-4 rounded-xl border border-brand-border flex flex-col gap-3">
+                           <div className="flex justify-between items-start gap-2">
+                               <input 
+                                   className="flex-1 bg-transparent border-none p-0 text-sm font-bold text-brand-dark focus:ring-0 placeholder-brand-secondary"
+                                   placeholder="Route Name (e.g. Home -> KLIA)"
+                                   value={leg.label}
+                                   onChange={(e) => updateTransfer(leg.id, 'label', e.target.value)}
+                               />
+                               <button onClick={() => removeTransfer(leg.id)} className="text-brand-secondary hover:text-red-500"><IconTrash className="w-4 h-4"/></button>
+                           </div>
+                           <div className="flex gap-2">
+                               <div className="flex-1">
+                                   <input 
+                                        className="w-full bg-white border border-brand-border rounded-lg px-3 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
+                                        placeholder="Transport Method (e.g. Grab)"
+                                        value={leg.method}
+                                        onChange={(e) => updateTransfer(leg.id, 'method', e.target.value)}
+                                   />
+                               </div>
+                               <div className="w-32 relative">
+                                    <input 
+                                        type="number" 
+                                        placeholder="0"
+                                        className="w-full bg-white border border-brand-border rounded-lg pl-3 pr-14 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
+                                        value={leg.cost || ''}
+                                        onChange={(e) => updateTransfer(leg.id, 'cost', parseFloat(e.target.value))}
+                                    />
+                                    <button 
+                                        onClick={() => updateTransfer(leg.id, 'currency', leg.currency === 'TWD' ? 'MYR' : 'TWD')} 
+                                        className="absolute right-1 top-1 bottom-1 px-2 text-[10px] font-bold rounded-md bg-brand-light text-brand-dark hover:bg-brand-border transition-colors flex items-center justify-center w-12"
+                                    >
+                                        {leg.currency === 'TWD' ? 'NT$' : 'RM'}
+                                    </button>
+                               </div>
+                           </div>
+                       </div>
+                   ))}
+               </div>
           </div>
       </div>
 
@@ -844,79 +860,89 @@ const Itinerary: React.FC<{
       )}
     </div>
   );
-};
-
-// --- Main App ---
-
-export default function App() {
-  const [activeTab, setActiveTab] = useState<'voyage' | 'itinerary' | 'essentials'>('voyage');
-  
-  const [appState, setAppState] = useState<AppState>(() => {
-    return {
-      shortlist: [],
-      packingList: [
-        { id: '1', name: 'Passport', category: 'Documents', isPacked: false },
-        { id: '2', name: 'Power Bank', category: 'Electronics', isPacked: false },
-      ],
-      itinerary: generateInitialItinerary(),
-      exchangeRate: DEFAULT_EXCHANGE_RATE,
-      displayCurrency: 'TWD',
-      budgetLimitMYR: 5000,
-      preDeparture: { 
-          flightInfo: '', flightCostMYR: 0, 
-          returnFlightInfo: '', returnFlightCostMYR: 0, 
-          arrivalTransportInfo: '', arrivalTransportCost: 0, arrivalTransportCurrency: 'TWD',
-          departureTransportInfo: '', departureTransportCost: 0, departureTransportCurrency: 'TWD',
-          notes: '' 
-      }
-    };
-  });
-
-  return (
-    <div className="min-h-screen bg-brand-bg font-sans text-brand-dark selection:bg-brand-primary/20">
-      <div className="max-w-md mx-auto min-h-screen bg-brand-bg relative shadow-2xl flex flex-col">
-        <header className="px-6 py-5 bg-brand-bg sticky top-0 z-20 border-b border-brand-border/50 pt-safe backdrop-blur-sm bg-opacity-90">
-            <h1 className="text-xl font-display font-bold text-brand-dark tracking-tight flex items-center gap-2">
-                Taipei Journey
-            </h1>
-        </header>
-
-        <main className="flex-1 p-4 overflow-y-auto no-scrollbar">
-            {activeTab === 'voyage' && <VoyageDashboard appState={appState} setAppState={setAppState} />}
-            {activeTab === 'itinerary' && <Itinerary appState={appState} setAppState={setAppState} />}
-            {activeTab === 'essentials' && <Essentials appState={appState} setAppState={setAppState} />}
-        </main>
-
-        <nav className="fixed bottom-0 w-full max-w-md bg-white border-t border-brand-border px-6 py-3 flex justify-between items-center z-30 pb-safe rounded-t-2xl shadow-[0_-5px_20px_-5px_rgba(0,0,0,0.03)]">
-            <button 
-                onClick={() => setActiveTab('voyage')}
-                className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'voyage' ? 'text-brand-primary' : 'text-brand-secondary hover:text-brand-dark'}`}
-            >
-                <div className={`p-1.5 rounded-lg ${activeTab === 'voyage' ? 'bg-brand-primary/10' : ''}`}>
-                    <IconFlight className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-bold tracking-wide">Voyage</span>
-            </button>
-            <button 
-                onClick={() => setActiveTab('itinerary')}
-                className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'itinerary' ? 'text-brand-primary' : 'text-brand-secondary hover:text-brand-dark'}`}
-            >
-                 <div className={`p-1.5 rounded-lg ${activeTab === 'itinerary' ? 'bg-brand-primary/10' : ''}`}>
-                    <IconCalendar className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-bold tracking-wide">Itinerary</span>
-            </button>
-            <button 
-                onClick={() => setActiveTab('essentials')}
-                className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'essentials' ? 'text-brand-primary' : 'text-brand-secondary hover:text-brand-dark'}`}
-            >
-                 <div className={`p-1.5 rounded-lg ${activeTab === 'essentials' ? 'bg-brand-primary/10' : ''}`}>
-                    <IconList className="w-5 h-5" />
-                </div>
-                <span className="text-[10px] font-bold tracking-wide">Essentials</span>
-            </button>
-        </nav>
-      </div>
-    </div>
-  );
 }
+
+const App = () => {
+    const [activeTab, setActiveTab] = useState<'voyage' | 'essentials' | 'itinerary'>('voyage');
+    
+    // Initialize state from local storage or defaults
+    const [appState, setAppState] = useState<AppState>(() => {
+      try {
+          const saved = localStorage.getItem('trip_state_v1');
+          if (saved) {
+              const parsed = JSON.parse(saved);
+              // Simple migration/check to ensure itinerary exists
+              if (!parsed.itinerary || parsed.itinerary.length === 0) {
+                   parsed.itinerary = generateInitialItinerary();
+              }
+              return parsed;
+          }
+      } catch (e) {
+          console.error("Failed to load state", e);
+      }
+      
+      return {
+          shortlist: [],
+          packingList: [],
+          itinerary: generateInitialItinerary(),
+          exchangeRate: DEFAULT_EXCHANGE_RATE,
+          displayCurrency: 'TWD',
+          budgetLimitMYR: 5000,
+          weatherCache: [],
+          preDeparture: {
+              flightInfo: '',
+              flightCostMYR: 0,
+              returnFlightInfo: '',
+              returnFlightCostMYR: 0,
+              transfers: [],
+              notes: ''
+          }
+      };
+    });
+  
+    // Save to local storage
+    useEffect(() => {
+      localStorage.setItem('trip_state_v1', JSON.stringify(appState));
+    }, [appState]);
+  
+    return (
+      <div className="bg-brand-bg min-h-screen text-brand-dark font-sans selection:bg-brand-primary/30 pb-20 sm:pb-0">
+          <div className="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative flex flex-col overflow-hidden border-x border-brand-border">
+              
+              {/* Render Active Section */}
+              <main className="flex-1 overflow-y-auto no-scrollbar scroll-smooth">
+                  {activeTab === 'voyage' && <VoyageDashboard appState={appState} setAppState={setAppState} />}
+                  {activeTab === 'essentials' && <Essentials appState={appState} setAppState={setAppState} />}
+                  {activeTab === 'itinerary' && <Itinerary appState={appState} setAppState={setAppState} />}
+              </main>
+  
+              {/* Bottom Navigation */}
+              <nav className="absolute bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-brand-border px-6 py-4 flex justify-between items-center z-50 pb-safe">
+                  <button 
+                      onClick={() => setActiveTab('voyage')} 
+                      className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'voyage' ? 'text-brand-dark scale-105' : 'text-brand-secondary hover:text-brand-dark'}`}
+                  >
+                      <IconFlight className={`w-6 h-6 ${activeTab === 'voyage' ? 'fill-current' : ''}`} />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Voyage</span>
+                  </button>
+                  <button 
+                      onClick={() => setActiveTab('itinerary')} 
+                      className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'itinerary' ? 'text-brand-dark scale-105' : 'text-brand-secondary hover:text-brand-dark'}`}
+                  >
+                      <IconList className={`w-6 h-6 ${activeTab === 'itinerary' ? 'fill-current' : ''}`} />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Plan</span>
+                  </button>
+                  <button 
+                      onClick={() => setActiveTab('essentials')} 
+                      className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'essentials' ? 'text-brand-dark scale-105' : 'text-brand-secondary hover:text-brand-dark'}`}
+                  >
+                      <IconCheck className={`w-6 h-6 ${activeTab === 'essentials' ? 'fill-current' : ''}`} />
+                      <span className="text-[10px] font-bold uppercase tracking-widest">Items</span>
+                  </button>
+              </nav>
+          </div>
+      </div>
+    );
+  };
+  
+  export default App;

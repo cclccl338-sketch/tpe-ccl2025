@@ -1,4 +1,5 @@
 
+
 export enum ActivityCategory {
   Sightseeing = 'Sightseeing',
   Food = 'Food',
@@ -95,21 +96,21 @@ export interface WeatherCardData {
   advice: string;
 }
 
+export interface TransportLeg {
+  id: string;
+  label: string;
+  method: string;
+  cost: number;
+  currency: 'TWD' | 'MYR';
+}
+
 export interface PreDepartureDetails {
   flightInfo: string;
   flightCostMYR: number; // Strictly MYR
   returnFlightInfo: string;
   returnFlightCostMYR: number; // Strictly MYR
   
-  // Arrival Transfer (Airport -> City)
-  arrivalTransportInfo: string;
-  arrivalTransportCost: number;
-  arrivalTransportCurrency: 'TWD' | 'MYR';
-
-  // Departure Transfer (City -> Airport)
-  departureTransportInfo: string;
-  departureTransportCost: number;
-  departureTransportCurrency: 'TWD' | 'MYR';
+  transfers: TransportLeg[];
 
   notes: string;
 }
