@@ -11,6 +11,9 @@ export const checkApiKey = (): boolean => {
 
 // Helper to perform a search for a place using Google Maps Grounding
 export const searchPlace = async (query: string): Promise<{ name: string; address: string; mapUrl: string; description: string }> => {
+  if (!navigator.onLine) {
+      throw new Error("Offline");
+  }
   if (!apiKey) throw new Error("API Key missing");
 
   const model = 'gemini-2.5-flash';
@@ -73,6 +76,9 @@ export const searchPlace = async (query: string): Promise<{ name: string; addres
 
 // Helper to get weather advice
 export const getWeatherAdvice = async (dates: string[]): Promise<WeatherCardData[]> => {
+    if (!navigator.onLine) {
+        return [];
+    }
     if (!apiKey) return [];
 
     const model = 'gemini-2.5-flash';

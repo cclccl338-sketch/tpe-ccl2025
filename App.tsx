@@ -700,25 +700,25 @@ const Itinerary: React.FC<{
 
               return (
                 <div key={act.id} onClick={() => openEdit(act)} className={`rounded-2xl p-5 shadow-sm border flex gap-4 relative group cursor-pointer transition-transform active:scale-[0.99] ${themeClass}`}>
-                    <div className="flex flex-col items-center gap-1 min-w-[50px]">
+                    <div className="flex flex-col items-center gap-1 min-w-[50px] shrink-0">
                         <span className="font-bold opacity-70 text-sm">{act.time}</span>
                         <div className="h-full w-px bg-current opacity-20 mt-1"></div>
                     </div>
-                    <div className="flex-1 pb-1">
+                    <div className="flex-1 pb-1 min-w-0">
                         <div className="flex justify-between items-start">
                             <span className="inline-block px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider bg-white/50 mb-2 border border-black/5">
                                 {act.category}
                             </span>
                             <IconPencil className="w-4 h-4 opacity-30" />
                         </div>
-                        <h4 className="font-bold text-lg leading-tight">{act.locationName}</h4>
+                        <h4 className="font-bold text-lg leading-tight truncate">{act.locationName}</h4>
                         <div className="flex flex-wrap gap-3 mt-3 text-xs font-semibold opacity-80">
                             {act.category === ActivityCategory.Sightseeing && act.arrivalTransport && <span className="flex items-center gap-1 bg-white/60 px-2 py-1 rounded text-current">📍 Reach via {act.arrivalTransport}</span>}
                             {act.transportType && <span className="flex items-center gap-1">🚌 {act.transportType}</span>}
                             {act.mealType && <span className="flex items-center gap-1">🍴 {act.mealType}</span>}
                             {costTWD > 0 && <span className="flex items-center gap-1">💰 NT${costTWD}</span>}
                         </div>
-                        {act.notes && <p className="mt-3 text-sm italic opacity-70 border-l-2 border-current pl-3 py-1">"{act.notes}"</p>}
+                        {act.notes && <p className="mt-3 text-sm italic opacity-70 border-l-2 border-current pl-3 py-1 line-clamp-2">"{act.notes}"</p>}
                     </div>
                 </div>
               );
@@ -757,12 +757,12 @@ const Itinerary: React.FC<{
                   </div>
                   
                   <div className="space-y-6">
-                      <div className="flex gap-4">
-                          <div className="w-1/3">
+                      <div className="flex flex-col sm:flex-row gap-4">
+                          <div className="w-full sm:w-1/3">
                               <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-2 block">Time</label>
                               <Input type="time" value={formData.time} onChange={e => setFormData({...formData, time: e.target.value})} className="text-center font-semibold" />
                           </div>
-                          <div className="w-2/3">
+                          <div className="w-full sm:w-2/3">
                               <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-2 block">Cost (TWD)</label>
                               <Input type="number" placeholder="0" value={formCost} onChange={e => setFormCost(e.target.value)} />
                           </div>
@@ -864,6 +864,7 @@ const Itinerary: React.FC<{
 
 const App = () => {
     const [activeTab, setActiveTab] = useState<'voyage' | 'essentials' | 'itinerary'>('voyage');
+    const [isOffline, setIsOffline] = useState(!navigator.onLine);
     
     // Initialize state from local storage or defaults
     const [appState, setAppState] = useState<AppState>(() => {
@@ -904,10 +905,23 @@ const App = () => {
     useEffect(() => {
       localStorage.setItem('trip_state_v1', JSON.stringify(appState));
     }, [appState]);
+
+    // Offline listener
+    useEffect(() => {
+        const handleOnline = () => setIsOffline(false);
+        const handleOffline = () => setIsOffline(true);
+        window.addEventListener('online', handleOnline);
+        window.addEventListener('offline', handleOffline);
+        return () => {
+            window.removeEventListener('online', handleOnline);
+            window.removeEventListener('offline', handleOffline);
+        }
+    }, []);
   
     return (
       <div className="bg-brand-bg min-h-screen text-brand-dark font-sans selection:bg-brand-primary/30 pb-20 sm:pb-0">
           <div className="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative flex flex-col overflow-hidden border-x border-brand-border">
+              {isOffline && <div className="bg-brand-secondary text-white text-[10px] font-bold uppercase tracking-widest text-center py-1">Offline Mode • Changes Saved Locally</div>}
               
               {/* Render Active Section */}
               <main className="flex-1 overflow-y-auto no-scrollbar scroll-smooth">
