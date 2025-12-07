@@ -1,7 +1,10 @@
+
+
+
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { Activity, AppState, DayPlan, MealType, PackingItem, ShortlistItem, TransportType, ActivityCategory, TransportLeg } from './types';
+import { Activity, AppState, DayPlan, MealType, PackingItem, ShortlistItem, TransportType, ActivityCategory, TransportLeg, LocationSearchResult } from './types';
 import { generateInitialItinerary, START_DATE, END_DATE, DEFAULT_EXCHANGE_RATE } from './constants';
-import { IconCalendar, IconList, IconWeather, IconPlus, IconTrash, IconMap, IconCheck, IconFlight, IconSearch, IconExternal, IconShare, IconPencil, IconCar } from './components/Icons';
+import { IconCalendar, IconList, IconWeather, IconPlus, IconTrash, IconMap, IconCheck, IconFlight, IconSearch, IconExternal, IconShare, IconPencil, IconCar, IconChart, IconLocation, IconTranslate, IconInfo } from './components/Icons';
 import { searchPlace, getWeatherAdvice } from './services/geminiService';
 
 // --- Utility Components ---
@@ -43,6 +46,69 @@ const CurrencyToggle: React.FC<{ value: 'TWD' | 'MYR'; onChange: (v: 'TWD' | 'MY
   </div>
 );
 
+// --- Modals ---
+
+const LocationDetailModal: React.FC<{ 
+    result: LocationSearchResult; 
+    onClose: () => void; 
+    onAdd?: () => void;
+    addLabel?: string;
+}> = ({ result, onClose, onAdd, addLabel = "Add to List" }) => {
+    const [lang, setLang] = useState<'en' | 'zh'>('en');
+
+    return (
+        <div className="fixed inset-0 bg-brand-dark/60 backdrop-blur-sm z-[100] flex items-center justify-center p-4">
+            <div className="bg-white w-full max-w-md rounded-3xl p-0 shadow-2xl animate-slide-up overflow-hidden flex flex-col max-h-[85vh]">
+                {/* Header with Image placeholder or Map */}
+                <div className="h-40 bg-brand-light relative border-b border-brand-border">
+                    <iframe 
+                        width="100%" 
+                        height="100%" 
+                        style={{border:0}} 
+                        loading="lazy" 
+                        allowFullScreen 
+                        src={`https://www.google.com/maps/embed/v1/place?key=${process.env.API_KEY}&q=${encodeURIComponent(result.name + ' ' + result.address)}`}>
+                    </iframe>
+                    <div className="absolute top-4 right-4 flex gap-2">
+                         <button onClick={() => setLang(lang === 'en' ? 'zh' : 'en')} className="bg-white/90 backdrop-blur text-brand-dark px-3 py-1.5 rounded-full text-xs font-bold shadow-sm flex items-center gap-1 hover:bg-white transition-colors">
+                             <IconTranslate className="w-3 h-3"/> {lang === 'en' ? '繁體中文' : 'English'}
+                         </button>
+                         <button onClick={onClose} className="bg-white/90 backdrop-blur text-brand-dark w-8 h-8 rounded-full font-bold shadow-sm hover:bg-white flex items-center justify-center transition-colors">✕</button>
+                    </div>
+                </div>
+
+                <div className="p-6 overflow-y-auto">
+                    <h3 className="text-2xl font-display font-bold text-brand-dark mb-1 leading-tight">{result.name}</h3>
+                    <p className="text-xs text-brand-secondary mb-4 flex items-center gap-1"><IconMap className="w-3 h-3"/> {result.address || 'Address not available'}</p>
+                    
+                    <div className="bg-brand-light/50 p-4 rounded-xl border border-brand-border mb-4">
+                        <h4 className="text-xs font-bold uppercase tracking-wider text-brand-primary mb-2 flex items-center gap-1"><IconInfo className="w-3 h-3"/> About</h4>
+                        <p className="text-sm leading-relaxed text-brand-dark">{result.description[lang]}</p>
+                    </div>
+
+                    {result.funThings[lang].length > 0 && (
+                        <div>
+                             <h4 className="text-xs font-bold uppercase tracking-wider text-brand-secondary mb-2">Fun Things to Do</h4>
+                             <ul className="space-y-2">
+                                 {result.funThings[lang].map((thing, i) => (
+                                     <li key={i} className="flex gap-2 text-sm text-brand-dark">
+                                         <span className="text-brand-primary">•</span> {thing}
+                                     </li>
+                                 ))}
+                             </ul>
+                        </div>
+                    )}
+                </div>
+
+                <div className="p-4 border-t border-brand-border bg-white flex gap-3">
+                     <Button variant="secondary" className="flex-1" onClick={() => window.open(result.mapUrl, '_blank')}>View on Map</Button>
+                     {onAdd && <Button onClick={onAdd} className="flex-1">{addLabel}</Button>}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // --- Sections ---
 
 // 1. Voyage Tab (Dashboard, Logistics, Budget)
@@ -56,26 +122,47 @@ const VoyageDashboard: React.FC<{
   const diffTime = start.getTime() - today.getTime();
   const daysLeft = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
 
-  const totalBudgetTWD = useMemo(() => {
-    // 1. Sum Itinerary Costs
-    const itineraryCost = appState.itinerary.reduce((sum, day) => {
-        return sum + day.activities.reduce((dSum, act) => {
-            return dSum + (act.transportCostTWD || 0) + (act.mealCostTWD || 0) + (act.ticketCostTWD || 0) + (act.arrivalCostTWD || 0);
-        }, 0);
-    }, 0);
+  const [isEditingTransfer, setIsEditingTransfer] = useState(false);
+  const [currentTransferId, setCurrentTransferId] = useState<string | null>(null);
+  const [transferForm, setTransferForm] = useState<TransportLeg>({ id: '', label: '', method: '', cost: 0, currency: 'TWD', date: '' });
 
-    // 2. Pre-Departure Costs
-    const flightCostMYR = (appState.preDeparture.flightCostMYR || 0) + (appState.preDeparture.returnFlightCostMYR || 0);
-    const flightCostTWD = flightCostMYR / appState.exchangeRate;
+  const breakdown = useMemo(() => {
+    // Totals in TWD
+    let flights = 0;
+    let transfers = 0;
+    let food = 0;
+    let transport = 0;
+    let sightseeing = 0;
 
-    // 3. Transfers Cost
-    const transfersCostTWD = appState.preDeparture.transfers.reduce((sum, t) => {
-        if (t.currency === 'MYR') return sum + (t.cost / appState.exchangeRate);
-        return sum + t.cost;
-    }, 0);
+    // Flights (MYR to TWD)
+    const flightMYR = (appState.preDeparture.flightCostMYR || 0) + (appState.preDeparture.returnFlightCostMYR || 0);
+    flights += flightMYR / appState.exchangeRate;
 
-    return itineraryCost + flightCostTWD + transfersCostTWD;
+    // Logistics / Transfers
+    appState.preDeparture.transfers.forEach(t => {
+        if(t.currency === 'MYR') transfers += t.cost / appState.exchangeRate;
+        else transfers += t.cost;
+    });
+
+    // Itinerary Activities
+    appState.itinerary.forEach(day => {
+        day.activities.forEach(act => {
+             // Main transport
+             if(act.transportCostTWD) transport += act.transportCostTWD;
+             // Arrival transport
+             if(act.arrivalCostTWD) transport += act.arrivalCostTWD;
+             // Food
+             if(act.mealCostTWD) food += act.mealCostTWD;
+             // Sightseeing / Tickets
+             if(act.ticketCostTWD) sightseeing += act.ticketCostTWD;
+        });
+    });
+
+    const total = flights + transfers + food + transport + sightseeing;
+    return { flights, transfers, food, transport, sightseeing, total };
+
   }, [appState.itinerary, appState.preDeparture, appState.exchangeRate]);
+
 
   const updatePreDeparture = (field: keyof typeof appState.preDeparture, value: any) => {
     setAppState(prev => ({
@@ -84,27 +171,33 @@ const VoyageDashboard: React.FC<{
     }));
   }
 
-  const updateTransfer = (id: string, field: keyof TransportLeg, value: any) => {
-      setAppState(prev => ({
-          ...prev,
-          preDeparture: {
-              ...prev.preDeparture,
-              transfers: prev.preDeparture.transfers.map(t => t.id === id ? { ...t, [field]: value } : t)
-          }
-      }));
+  const openTransferModal = (transfer?: TransportLeg) => {
+      if (transfer) {
+          setCurrentTransferId(transfer.id);
+          setTransferForm(transfer);
+      } else {
+          setCurrentTransferId(null);
+          setTransferForm({ id: Date.now().toString(), label: '', method: '', cost: 0, currency: 'TWD', date: '' });
+      }
+      setIsEditingTransfer(true);
   };
 
-  const addTransfer = () => {
-      setAppState(prev => ({
-          ...prev,
-          preDeparture: {
-              ...prev.preDeparture,
-              transfers: [
-                  ...prev.preDeparture.transfers,
-                  { id: Date.now().toString(), label: 'New Transfer', method: '', cost: 0, currency: 'TWD' }
-              ]
+  const saveTransfer = () => {
+      if(!transferForm.label) return;
+      setAppState(prev => {
+          const currentList = prev.preDeparture.transfers;
+          let newList;
+          if (currentTransferId) {
+              newList = currentList.map(t => t.id === currentTransferId ? transferForm : t);
+          } else {
+              newList = [...currentList, transferForm];
           }
-      }));
+          return {
+              ...prev,
+              preDeparture: { ...prev.preDeparture, transfers: newList }
+          }
+      });
+      setIsEditingTransfer(false);
   };
 
   const removeTransfer = (id: string) => {
@@ -121,8 +214,95 @@ const VoyageDashboard: React.FC<{
       setAppState(prev => ({ ...prev, displayCurrency: val }));
   }
 
+  const formatCost = (costTWD: number) => {
+      if (appState.displayCurrency === 'TWD') {
+          return `NT$ ${costTWD.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+      } else {
+          return `RM ${(costTWD * appState.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      }
+  };
+
+  const handleExportBudget = () => {
+      const totalCost = breakdown.total;
+      const currency = appState.displayCurrency;
+      const rate = appState.exchangeRate;
+      
+      const format = (twd: number) => {
+           if (currency === 'TWD') return `NT$ ${twd.toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
+           return `RM ${(twd * rate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+      };
+
+      const content = `
+        <html>
+            <head>
+                <title>Trip Budget - Taipei Journey</title>
+                <style>
+                    body { font-family: 'Inter', sans-serif; padding: 40px; color: #0f172a; max-width: 800px; margin: 0 auto; }
+                    h1 { border-bottom: 2px solid #0ea5e9; padding-bottom: 10px; margin-bottom: 30px; }
+                    .summary-card { background: #f8fafc; padding: 20px; border-radius: 12px; margin-bottom: 30px; text-align: center; }
+                    .total-label { font-size: 0.9em; text-transform: uppercase; letter-spacing: 1px; color: #64748b; font-weight: bold; }
+                    .total-amount { font-size: 3em; font-weight: 800; color: #0f172a; margin: 10px 0; }
+                    table { width: 100%; border-collapse: collapse; }
+                    th { text-align: left; padding: 12px; border-bottom: 2px solid #e2e8f0; color: #64748b; font-size: 0.9em; text-transform: uppercase; }
+                    td { padding: 16px 12px; border-bottom: 1px solid #e2e8f0; font-weight: 500; }
+                    tr:last-child td { border-bottom: none; }
+                    .amount { text-align: right; font-family: monospace; font-size: 1.1em; }
+                    .category-icon { display: inline-block; width: 20px; text-align: center; margin-right: 10px; }
+                    @media print { body { padding: 0; } .no-print { display: none; } }
+                </style>
+            </head>
+            <body>
+                <h1>Trip Budget Breakdown</h1>
+                
+                <div class="summary-card">
+                    <div class="total-label">Estimated Total Cost</div>
+                    <div class="total-amount">${format(totalCost)}</div>
+                    <div style="font-size: 0.9em; color: #64748b;">Exchange Rate: 1 TWD = ${rate} MYR</div>
+                </div>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Category</th>
+                            <th style="text-align: right;">Cost</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>✈️ Flights</td>
+                            <td class="amount">${format(breakdown.flights)}</td>
+                        </tr>
+                        <tr>
+                            <td>🚗 Logistics / Transfers</td>
+                            <td class="amount">${format(breakdown.transfers)}</td>
+                        </tr>
+                        <tr>
+                            <td>🚌 Local Transport</td>
+                            <td class="amount">${format(breakdown.transport)}</td>
+                        </tr>
+                        <tr>
+                            <td>🍜 Food & Dining</td>
+                            <td class="amount">${format(breakdown.food)}</td>
+                        </tr>
+                        <tr>
+                            <td>🎟️ Sightseeing & Tickets</td>
+                            <td class="amount">${format(breakdown.sightseeing)}</td>
+                        </tr>
+                    </tbody>
+                </table>
+                <script>window.print();</script>
+            </body>
+        </html>
+      `;
+      const printWindow = window.open('', '_blank');
+      if (printWindow) {
+          printWindow.document.write(content);
+          printWindow.document.close();
+      }
+  };
+
   return (
-    <div className="space-y-4 pb-24 animate-fade-in">
+    <div className="space-y-4 pb-24 animate-fade-in p-4">
       {/* Hero / Countdown */}
       <div className="bg-brand-dark p-8 rounded-2xl shadow-float text-center text-white relative overflow-hidden">
         <div className="relative z-10">
@@ -194,44 +374,30 @@ const VoyageDashboard: React.FC<{
                     <span className="p-2 bg-brand-light text-brand-dark rounded-lg"><IconCar className="w-4 h-4"/></span>
                     Logistics / Transfers
                   </h3>
-                  <Button variant="ghost" onClick={addTransfer} className="text-xs px-2 py-1 h-auto"><IconPlus className="w-4 h-4"/> Add</Button>
+                  <Button variant="ghost" onClick={() => openTransferModal()} className="text-xs px-2 py-1 h-auto"><IconPlus className="w-4 h-4"/> Add</Button>
                </div>
                
                <div className="space-y-3">
+                   {appState.preDeparture.transfers.length === 0 && (
+                       <p className="text-center text-sm text-brand-secondary italic py-4">No transfers added yet.</p>
+                   )}
                    {appState.preDeparture.transfers.map((leg) => (
-                       <div key={leg.id} className="bg-brand-light/30 p-4 rounded-xl border border-brand-border flex flex-col gap-3">
-                           <div className="flex justify-between items-start gap-2">
-                               <input 
-                                   className="flex-1 bg-transparent border-none p-0 text-sm font-bold text-brand-dark focus:ring-0 placeholder-brand-secondary"
-                                   placeholder="Route Name (e.g. Home -> KLIA)"
-                                   value={leg.label}
-                                   onChange={(e) => updateTransfer(leg.id, 'label', e.target.value)}
-                               />
-                               <button onClick={() => removeTransfer(leg.id)} className="text-brand-secondary hover:text-red-500"><IconTrash className="w-4 h-4"/></button>
+                       <div key={leg.id} onClick={() => openTransferModal(leg)} className="bg-brand-light/30 p-4 rounded-xl border border-brand-border flex gap-4 relative group cursor-pointer transition-transform active:scale-[0.99] hover:border-brand-primary/30">
+                           <div className="flex flex-col items-center gap-1 min-w-[50px] shrink-0 pt-1">
+                                <span className="text-[10px] font-bold text-brand-secondary uppercase tracking-wider">Date</span>
+                                <span className="font-bold text-sm text-brand-dark">{leg.date ? new Date(leg.date).getDate() : '--'}</span>
+                                <span className="text-[10px] text-brand-secondary">{leg.date ? new Date(leg.date).toLocaleDateString(undefined, {month:'short'}) : ''}</span>
                            </div>
-                           <div className="flex gap-2">
-                               <div className="flex-1">
-                                   <input 
-                                        className="w-full bg-white border border-brand-border rounded-lg px-3 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                                        placeholder="Transport Method (e.g. Grab)"
-                                        value={leg.method}
-                                        onChange={(e) => updateTransfer(leg.id, 'method', e.target.value)}
-                                   />
+                           <div className="flex-1 min-w-0">
+                               <div className="flex justify-between items-start">
+                                    <h4 className="font-bold text-brand-dark truncate pr-2">{leg.label}</h4>
+                                    <IconPencil className="w-4 h-4 text-brand-secondary opacity-30" />
                                </div>
-                               <div className="w-32 relative">
-                                    <input 
-                                        type="number" 
-                                        placeholder="0"
-                                        className="w-full bg-white border border-brand-border rounded-lg pl-3 pr-14 py-2 text-sm text-brand-dark text-base focus:ring-1 focus:ring-brand-primary focus:outline-none"
-                                        value={leg.cost || ''}
-                                        onChange={(e) => updateTransfer(leg.id, 'cost', parseFloat(e.target.value))}
-                                    />
-                                    <button 
-                                        onClick={() => updateTransfer(leg.id, 'currency', leg.currency === 'TWD' ? 'MYR' : 'TWD')} 
-                                        className="absolute right-1 top-1 bottom-1 px-2 text-[10px] font-bold rounded-md bg-brand-light text-brand-dark hover:bg-brand-border transition-colors flex items-center justify-center w-12"
-                                    >
-                                        {leg.currency === 'TWD' ? 'NT$' : 'RM'}
-                                    </button>
+                               <p className="text-sm text-brand-secondary mt-1 flex items-center gap-1">
+                                   <IconCar className="w-3 h-3"/> {leg.method}
+                               </p>
+                               <div className="mt-2 inline-flex items-center gap-1 bg-white border border-brand-border px-2 py-1 rounded text-xs font-semibold text-brand-dark shadow-sm">
+                                   💰 {leg.currency === 'TWD' ? 'NT$' : 'RM'} {leg.cost}
                                </div>
                            </div>
                        </div>
@@ -240,39 +406,131 @@ const VoyageDashboard: React.FC<{
           </div>
       </div>
 
-      {/* Budget */}
+      {/* Budget Breakdown */}
       <div className="bg-white p-6 rounded-2xl shadow-clean border border-brand-border">
-        <div className="flex justify-between items-center mb-4">
-            <h3 className="text-lg font-display font-bold text-brand-dark">Trip Budget</h3>
-            <div className="scale-90 origin-right">
-                <CurrencyToggle value={appState.displayCurrency} onChange={toggleCurrency} />
+        <div className="flex justify-between items-center mb-6">
+            <h3 className="text-lg font-display font-bold text-brand-dark flex items-center gap-2">
+                 <IconChart className="w-5 h-5 text-brand-primary"/> Trip Budget
+            </h3>
+            <div className="flex gap-2">
+                <Button variant="ghost" onClick={handleExportBudget} className="px-2 h-8 text-xs"><IconShare className="w-4 h-4"/></Button>
+                <div className="scale-90 origin-right">
+                    <CurrencyToggle value={appState.displayCurrency} onChange={toggleCurrency} />
+                </div>
             </div>
         </div>
         
-        <div className="bg-brand-light p-6 rounded-xl border border-brand-border flex flex-col items-center justify-center text-center">
-             <p className="text-xs text-brand-secondary font-bold uppercase tracking-wider mb-1">Estimated Total</p>
-             <p className="text-4xl font-display font-bold text-brand-dark tracking-tight">
-                 {appState.displayCurrency === 'TWD' 
-                    ? `NT$ ${totalBudgetTWD.toLocaleString(undefined, { maximumFractionDigits: 0 })}`
-                    : `RM ${(totalBudgetTWD * appState.exchangeRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-                 }
+        <div className="bg-brand-dark text-white p-6 rounded-xl shadow-float flex flex-col items-center justify-center text-center mb-6">
+             <p className="text-xs text-brand-secondary/80 font-bold uppercase tracking-wider mb-1">Estimated Total</p>
+             <p className="text-4xl font-display font-bold tracking-tight">
+                 {formatCost(breakdown.total)}
              </p>
+             <div className="mt-3 text-xs bg-white/10 px-3 py-1 rounded-full text-white/80">
+                 1 TWD ≈ {appState.exchangeRate} MYR
+             </div>
         </div>
         
-        <div className="mt-4 flex items-center justify-between text-sm text-brand-secondary bg-brand-light/50 px-5 py-3 rounded-xl">
-            <span>Exchange Rate (1 TWD)</span>
+        <div className="space-y-3">
+             <div className="flex justify-between items-center text-sm p-3 bg-brand-light/50 rounded-lg">
+                 <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-sky-500"></span>Flights</span>
+                 <span className="font-bold">{formatCost(breakdown.flights)}</span>
+             </div>
+             <div className="flex justify-between items-center text-sm p-3 bg-brand-light/50 rounded-lg">
+                 <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-indigo-500"></span>Transfers</span>
+                 <span className="font-bold">{formatCost(breakdown.transfers)}</span>
+             </div>
+             <div className="flex justify-between items-center text-sm p-3 bg-brand-light/50 rounded-lg">
+                 <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-blue-500"></span>Local Transport</span>
+                 <span className="font-bold">{formatCost(breakdown.transport)}</span>
+             </div>
+             <div className="flex justify-between items-center text-sm p-3 bg-brand-light/50 rounded-lg">
+                 <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-orange-500"></span>Food</span>
+                 <span className="font-bold">{formatCost(breakdown.food)}</span>
+             </div>
+             <div className="flex justify-between items-center text-sm p-3 bg-brand-light/50 rounded-lg">
+                 <span className="flex items-center gap-2"><span className="w-2 h-2 rounded-full bg-emerald-500"></span>Sightseeing</span>
+                 <span className="font-bold">{formatCost(breakdown.sightseeing)}</span>
+             </div>
+        </div>
+
+        <div className="mt-4 flex items-center justify-between text-sm text-brand-secondary bg-brand-light/30 px-4 py-2 rounded-lg border border-brand-border/50">
+            <span>Exchange Rate Setting</span>
             <div className="flex items-center gap-2">
-                <span className="font-bold text-brand-dark">RM</span>
+                <span className="font-bold text-brand-dark text-xs">RM</span>
                 <input 
                     type="number" 
                     step="0.001"
                     value={appState.exchangeRate} 
                     onChange={(e) => setAppState(prev => ({...prev, exchangeRate: parseFloat(e.target.value) || 0}))}
-                    className="w-16 bg-white border border-brand-border px-2 py-1 rounded text-center text-brand-dark font-bold focus:outline-none focus:ring-1 focus:ring-brand-primary text-base"
+                    className="w-16 bg-white border border-brand-border px-2 py-1 rounded text-center text-brand-dark font-bold focus:outline-none focus:ring-1 focus:ring-brand-primary text-sm"
                 />
             </div>
         </div>
       </div>
+
+      {/* Transfer Modal */}
+      {isEditingTransfer && (
+          <div className="fixed inset-0 bg-brand-dark/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+              <div className="bg-white w-full max-w-sm rounded-3xl p-6 shadow-2xl animate-slide-up">
+                  <h3 className="text-xl font-display font-bold text-brand-dark mb-4">{currentTransferId ? 'Edit Transfer' : 'New Transfer'}</h3>
+                  
+                  <div className="space-y-4">
+                      <div>
+                          <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-1 block">Description</label>
+                          <Input 
+                              placeholder="e.g. Home to KLIA" 
+                              value={transferForm.label} 
+                              onChange={(e) => setTransferForm({...transferForm, label: e.target.value})} 
+                          />
+                      </div>
+                      <div>
+                          <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-1 block">Date</label>
+                          <Input 
+                              type="date"
+                              value={transferForm.date || ''} 
+                              onChange={(e) => setTransferForm({...transferForm, date: e.target.value})} 
+                          />
+                      </div>
+                      <div>
+                          <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-1 block">Transport Method</label>
+                          <Input 
+                              placeholder="e.g. Grab, MRT" 
+                              value={transferForm.method} 
+                              onChange={(e) => setTransferForm({...transferForm, method: e.target.value})} 
+                          />
+                      </div>
+                      <div>
+                          <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-1 block">Cost</label>
+                          <div className="flex gap-2">
+                             <input 
+                                  type="number"
+                                  placeholder="0" 
+                                  className="flex-1 bg-white border border-brand-border text-brand-dark px-4 py-3 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-primary/20 text-base"
+                                  value={transferForm.cost || ''} 
+                                  onChange={(e) => setTransferForm({...transferForm, cost: parseFloat(e.target.value)})} 
+                              />
+                              <button 
+                                  onClick={() => setTransferForm(prev => ({...prev, currency: prev.currency === 'TWD' ? 'MYR' : 'TWD'}))}
+                                  className="px-4 rounded-xl font-bold border border-brand-border bg-brand-light text-brand-dark w-20"
+                              >
+                                  {transferForm.currency === 'TWD' ? 'NT$' : 'RM'}
+                              </button>
+                          </div>
+                      </div>
+                  </div>
+
+                  <div className="flex gap-3 mt-6">
+                      {currentTransferId && (
+                          <Button variant="danger" onClick={() => { removeTransfer(currentTransferId); setIsEditingTransfer(false); }}>
+                              <IconTrash className="w-5 h-5"/>
+                          </Button>
+                      )}
+                      <Button onClick={() => setIsEditingTransfer(false)} variant="secondary" className="flex-1">Cancel</Button>
+                      <Button onClick={saveTransfer} className="flex-1">Save</Button>
+                  </div>
+              </div>
+          </div>
+      )}
     </div>
   );
 };
@@ -285,15 +543,17 @@ const Essentials: React.FC<{
   const [newShortlist, setNewShortlist] = useState('');
   const [newPacking, setNewPacking] = useState('');
   const [loadingWeather, setLoadingWeather] = useState(false);
+  const [searchResult, setSearchResult] = useState<LocationSearchResult | null>(null);
+  const [searchingPlace, setSearchingPlace] = useState(false);
 
   const hasWeatherData = !!appState.weatherCache && appState.weatherCache.length > 0;
   
   const fetchWeather = async () => {
       setLoadingWeather(true);
-      // Generate the first 7 days of the trip
+      // Generate the first 3 days of the trip (Reduced from 7)
       const dates = [];
       const start = new Date(START_DATE);
-      for(let i=0; i<7; i++) {
+      for(let i=0; i<3; i++) {
         const d = new Date(start);
         d.setDate(start.getDate() + i);
         // Format YYYY-MM-DD
@@ -314,28 +574,33 @@ const Essentials: React.FC<{
       if (!hasWeatherData) fetchWeather();
   }, []);
 
-  const openMapSearch = (query: string) => {
-    if(!query) return;
-    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(query + ' Taiwan')}`;
-    window.open(url, '_blank');
-  };
-
-  const addShortlist = async () => {
-    if (!newShortlist.trim()) return;
-    const tempId = Date.now().toString();
-    const newItem: ShortlistItem = { id: tempId, name: newShortlist, isLoading: true };
-    setAppState(prev => ({ ...prev, shortlist: [newItem, ...prev.shortlist] }));
-    setNewShortlist('');
+  const handleSearchPlace = async (query: string) => {
+    if(!query.trim()) return;
+    setSearchingPlace(true);
     try {
-        const details = await searchPlace(newItem.name);
-        setAppState(prev => ({
-            ...prev,
-            shortlist: prev.shortlist.map(item => item.id === tempId ? { ...item, mapUrl: details.mapUrl, address: details.address, isLoading: false } : item)
-        }));
-    } catch (e) {
-        setAppState(prev => ({ ...prev, shortlist: prev.shortlist.map(item => item.id === tempId ? { ...item, isLoading: false } : item) }));
+        const result = await searchPlace(query);
+        setSearchResult(result);
+    } catch(e) {
+        console.error(e);
+    } finally {
+        setSearchingPlace(false);
     }
   };
+
+  const addShortlist = (item: LocationSearchResult) => {
+    const tempId = Date.now().toString();
+    const newItem: ShortlistItem = { 
+        id: tempId, 
+        name: item.name, 
+        address: item.address, 
+        mapUrl: item.mapUrl,
+        isLoading: false 
+    };
+    setAppState(prev => ({ ...prev, shortlist: [newItem, ...prev.shortlist] }));
+    setNewShortlist('');
+    setSearchResult(null);
+  };
+  
   const removeShortlist = (id: string) => setAppState(prev => ({ ...prev, shortlist: prev.shortlist.filter(i => i.id !== id) }));
 
   const addPacking = () => {
@@ -353,12 +618,12 @@ const Essentials: React.FC<{
   const removePacking = (id: string) => setAppState(prev => ({ ...prev, packingList: prev.packingList.filter(i => i.id !== id) }));
 
   return (
-    <div className="space-y-4 pb-24 animate-fade-in">
+    <div className="space-y-4 pb-24 animate-fade-in p-4">
         {/* Weather */}
         <div className="bg-white p-6 rounded-2xl shadow-clean border border-brand-border">
             <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-display font-bold text-brand-dark flex items-center gap-2">
-                    <IconWeather className="w-5 h-5 text-brand-primary" /> Forecast (7 Days)
+                    <IconWeather className="w-5 h-5 text-brand-primary" /> Forecast (3 Days)
                 </h3>
                 <Button variant="ghost" onClick={fetchWeather} disabled={loadingWeather} className="text-xs h-8 px-3 rounded-lg">
                     {loadingWeather ? '...' : 'Refresh'}
@@ -401,10 +666,11 @@ const Essentials: React.FC<{
             <h3 className="text-lg font-display font-bold text-brand-dark mb-4">Places to Visit</h3>
             <div className="flex gap-2 mb-6">
                 <div className="flex-1 relative">
-                    <Input placeholder="Place name..." value={newShortlist} onChange={(e) => setNewShortlist(e.target.value)} onKeyDown={e => e.key === 'Enter' && addShortlist()} className="pr-12 text-base" />
-                    <button onClick={() => openMapSearch(newShortlist)} className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-brand-secondary hover:text-brand-primary transition-colors bg-white rounded-lg hover:bg-brand-light"><IconSearch className="w-4 h-4" /></button>
+                    <Input placeholder="Place name..." value={newShortlist} onChange={(e) => setNewShortlist(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSearchPlace(newShortlist)} className="pr-12 text-base" />
+                    <button onClick={() => handleSearchPlace(newShortlist)} className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-brand-secondary hover:text-brand-primary transition-colors bg-white rounded-lg hover:bg-brand-light">
+                        {searchingPlace ? <span className="animate-spin block">↻</span> : <IconSearch className="w-4 h-4" />}
+                    </button>
                 </div>
-                <Button onClick={addShortlist} className="rounded-xl aspect-square p-0 w-[50px] flex-shrink-0 bg-brand-dark"><IconPlus className="w-5 h-5" /></Button>
             </div>
             <div className="space-y-3">
                 {appState.shortlist.map(item => (
@@ -423,7 +689,7 @@ const Essentials: React.FC<{
                 ))}
             </div>
         </div>
-
+        
         {/* Packing */}
         <div className="bg-white p-6 rounded-2xl shadow-clean border border-brand-border">
             <h3 className="text-lg font-display font-bold text-brand-dark mb-4">Packing List</h3>
@@ -443,6 +709,15 @@ const Essentials: React.FC<{
                 ))}
             </ul>
         </div>
+
+        {/* Search Result Modal */}
+        {searchResult && (
+            <LocationDetailModal 
+                result={searchResult} 
+                onClose={() => setSearchResult(null)} 
+                onAdd={() => addShortlist(searchResult)}
+            />
+        )}
     </div>
   );
 };
@@ -455,6 +730,12 @@ const Itinerary: React.FC<{
   const [selectedDayIndex, setSelectedDayIndex] = useState(0);
   const [isAdding, setIsAdding] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [showSightseeingLog, setShowSightseeingLog] = useState(false);
+  
+  // Search state for New Memory Modal
+  const [searchResult, setSearchResult] = useState<LocationSearchResult | null>(null);
+  const [searchingPlace, setSearchingPlace] = useState(false);
+
   const dayRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   const categoryStyles: Record<ActivityCategory, string> = {
@@ -489,11 +770,23 @@ const Itinerary: React.FC<{
   const [arrivalCost, setArrivalCost] = useState<string>('');
   const [exportMode, setExportMode] = useState<'day' | 'all' | null>(null);
 
+  // Safety check to prevent crashing if state is inconsistent or initializing
   const selectedDay = appState.itinerary[selectedDayIndex];
 
   useEffect(() => {
-    dayRefs.current[selectedDayIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
-  }, [selectedDayIndex]);
+    if (selectedDay) {
+        dayRefs.current[selectedDayIndex]?.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' });
+    }
+  }, [selectedDayIndex, selectedDay]);
+
+  // If day is missing (e.g. state reset or mismatch), render placeholder
+  if (!selectedDay) {
+      return (
+          <div className="h-full flex items-center justify-center text-brand-secondary">
+              <p>Loading itinerary...</p>
+          </div>
+      );
+  }
 
   const updateDay = (updatedDay: DayPlan) => {
     setAppState(prev => ({ ...prev, itinerary: prev.itinerary.map((d, i) => i === selectedDayIndex ? updatedDay : d) }));
@@ -541,6 +834,29 @@ const Itinerary: React.FC<{
       setFormCost('');
       setArrivalCost('');
       setIsAdding(true);
+  };
+
+  const handleSearchForActivity = async () => {
+      if(!formData.locationName) return;
+      setSearchingPlace(true);
+      try {
+          const result = await searchPlace(formData.locationName);
+          setSearchResult(result);
+      } catch (e) {
+          console.error(e);
+      } finally {
+          setSearchingPlace(false);
+      }
+  };
+
+  const useSearchResult = (result: LocationSearchResult) => {
+      setFormData(prev => ({
+          ...prev,
+          locationName: result.name,
+          locationAddress: result.address,
+          googleMapsUrl: result.mapUrl
+      }));
+      setSearchResult(null);
   };
 
   const handleSaveActivity = () => {
@@ -629,6 +945,18 @@ const Itinerary: React.FC<{
 
   const dayCostTWD = selectedDay.activities.reduce((sum, act) => sum + (act.transportCostTWD || 0) + (act.mealCostTWD || 0) + (act.ticketCostTWD || 0) + (act.arrivalCostTWD || 0), 0);
 
+  // Sightseeing Log Logic
+  const sightseeingList = useMemo(() => {
+    const list: { day: string, activities: Activity[] }[] = [];
+    appState.itinerary.forEach(day => {
+        const spots = day.activities.filter(a => a.category === ActivityCategory.Sightseeing);
+        if (spots.length > 0) {
+            list.push({ day: day.date, activities: spots });
+        }
+    });
+    return list;
+  }, [appState.itinerary]);
+
   return (
     <div className="pb-24 h-full flex flex-col">
       {/* Day Selector */}
@@ -666,18 +994,23 @@ const Itinerary: React.FC<{
              <p className="text-brand-secondary text-sm mt-1 font-medium">{selectedDay.activities.length} activities</p>
          </div>
          <div className="flex flex-col items-end gap-2">
-             <div className="relative">
-                <Button variant="secondary" className="px-3 py-1.5 text-xs h-8 rounded-lg" onClick={() => setExportMode('day')}>
-                    <IconShare className="w-4 h-4" /> Export
+             <div className="flex gap-2 relative">
+                <Button variant="secondary" className="px-3 py-2 h-auto rounded-lg" onClick={() => setShowSightseeingLog(true)}>
+                    <IconLocation className="w-5 h-5 text-emerald-600" />
                 </Button>
-                {exportMode && (
-                    <div className="absolute right-0 top-full mt-2 bg-white rounded-xl shadow-xl border border-brand-border p-2 z-50 w-36 flex flex-col gap-1">
-                        <button onClick={() => handleExport('day')} className="text-left px-3 py-2 hover:bg-brand-light rounded-lg text-xs font-semibold text-brand-dark">Current Day</button>
-                        <button onClick={() => handleExport('all')} className="text-left px-3 py-2 hover:bg-brand-light rounded-lg text-xs font-semibold text-brand-dark">Full Journey</button>
-                        <div className="h-px bg-brand-border my-1"></div>
-                        <button onClick={() => setExportMode(null)} className="text-left px-3 py-2 hover:bg-red-50 rounded-lg text-xs font-semibold text-red-500">Cancel</button>
-                    </div>
-                )}
+                <div className="relative">
+                    <Button variant="secondary" className="px-3 py-2 h-auto rounded-lg" onClick={() => setExportMode('day')}>
+                        <IconShare className="w-5 h-5" />
+                    </Button>
+                    {exportMode && (
+                        <div className="absolute right-0 top-full mt-2 bg-white rounded-xl shadow-xl border border-brand-border p-2 z-50 w-36 flex flex-col gap-1">
+                            <button onClick={() => handleExport('day')} className="text-left px-3 py-2 hover:bg-brand-light rounded-lg text-xs font-semibold text-brand-dark">Current Day</button>
+                            <button onClick={() => handleExport('all')} className="text-left px-3 py-2 hover:bg-brand-light rounded-lg text-xs font-semibold text-brand-dark">Full Journey</button>
+                            <div className="h-px bg-brand-border my-1"></div>
+                            <button onClick={() => setExportMode(null)} className="text-left px-3 py-2 hover:bg-red-50 rounded-lg text-xs font-semibold text-red-500">Cancel</button>
+                        </div>
+                    )}
+                </div>
              </div>
              <p className="text-xl font-bold text-brand-dark leading-none">
                  NT$ {dayCostTWD.toLocaleString(undefined, { maximumFractionDigits: 0 })}
@@ -728,11 +1061,11 @@ const Itinerary: React.FC<{
             <div className="pt-8 pb-4">
                 <div className="bg-white rounded-2xl p-5 shadow-clean border border-brand-border relative overflow-hidden">
                     <h3 className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-3 flex items-center gap-2 relative z-10">
-                        Daily Notes
+                        <IconPencil className="w-4 h-4" /> Daily Reflection & Notes
                     </h3>
                     <textarea 
                         className="w-full bg-brand-light rounded-xl p-4 text-sm text-brand-dark placeholder-brand-secondary/50 focus:outline-none focus:ring-2 focus:ring-brand-primary/10 resize-none transition-colors border border-transparent focus:border-brand-primary/20 relative z-10 text-base"
-                        placeholder="What did you discover today?"
+                        placeholder="What did you discover today? Any memorable moments?"
                         rows={3}
                         value={selectedDay.dailySummary || ''}
                         onChange={(e) => updateDay({ ...selectedDay, dailySummary: e.target.value })}
@@ -746,6 +1079,46 @@ const Itinerary: React.FC<{
               </button>
           </div>
       </div>
+
+      {/* Sightseeing Log Modal */}
+      {showSightseeingLog && (
+        <div className="fixed inset-0 bg-brand-dark/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+            <div className="bg-white w-full max-w-lg rounded-3xl p-6 shadow-2xl animate-slide-up max-h-[85vh] flex flex-col">
+                <div className="flex justify-between items-center mb-6">
+                    <h3 className="text-xl font-display font-bold text-brand-dark flex items-center gap-2">
+                        <IconLocation className="w-6 h-6 text-emerald-600"/> Sightseeing Log
+                    </h3>
+                    <Button variant="ghost" onClick={() => setShowSightseeingLog(false)} className="h-8 w-8 p-0 rounded-full">✕</Button>
+                </div>
+                <div className="flex-1 overflow-y-auto pr-2 space-y-6">
+                    {sightseeingList.length === 0 ? (
+                        <p className="text-center text-brand-secondary py-8 italic">No sightseeing spots planned yet.</p>
+                    ) : (
+                        sightseeingList.map((entry, i) => (
+                            <div key={i}>
+                                <h4 className="text-xs font-bold uppercase tracking-wider text-brand-secondary mb-3 sticky top-0 bg-white py-2 z-10">
+                                    {new Date(entry.day).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}
+                                </h4>
+                                <div className="space-y-3">
+                                    {entry.activities.map(act => (
+                                        <div key={act.id} className="flex gap-3 items-start p-3 rounded-xl bg-brand-light/30 border border-brand-border">
+                                            <div className="bg-emerald-100 text-emerald-700 p-2 rounded-lg">
+                                                <IconMap className="w-4 h-4" />
+                                            </div>
+                                            <div>
+                                                <p className="font-bold text-brand-dark text-sm">{act.locationName}</p>
+                                                <p className="text-xs text-brand-secondary mt-1">{act.time} {act.arrivalTransport ? `• via ${act.arrivalTransport}` : ''}</p>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        ))
+                    )}
+                </div>
+            </div>
+        </div>
+      )}
 
       {/* New Memory Modal */}
       {isAdding && (
@@ -829,15 +1202,15 @@ const Itinerary: React.FC<{
                           <label className="text-xs font-bold text-brand-secondary uppercase tracking-wide mb-2 block">Location</label>
                           <div className="relative flex gap-2">
                             <div className="relative flex-1">
-                                <Input placeholder="Where to?" value={formData.locationName} onChange={e => setFormData({...formData, locationName: e.target.value})} className="pl-11" />
+                                <Input placeholder="Where to?" value={formData.locationName} onChange={e => setFormData({...formData, locationName: e.target.value})} className="pl-11" onKeyDown={e => e.key === 'Enter' && handleSearchForActivity()} />
                                 <div className="absolute left-4 top-3.5 text-brand-secondary/50"><IconMap className="w-5 h-5" /></div>
                             </div>
                             <button 
-                                onClick={() => { if(formData.locationName) window.open(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(formData.locationName + ' Taiwan')}`, '_blank'); }}
+                                onClick={handleSearchForActivity}
                                 disabled={!formData.locationName}
                                 className="bg-white hover:bg-brand-light text-brand-secondary hover:text-brand-primary px-4 rounded-xl transition-colors border border-brand-border disabled:opacity-50 shadow-sm"
                             >
-                                <IconSearch className="w-5 h-5" />
+                                {searchingPlace ? <span className="animate-spin block">↻</span> : <IconSearch className="w-5 h-5" />}
                             </button>
                           </div>
                       </div>
@@ -857,6 +1230,16 @@ const Itinerary: React.FC<{
                   </div>
               </div>
           </div>
+      )}
+      
+      {/* Search Result Modal for Itinerary */}
+      {searchResult && (
+          <LocationDetailModal 
+              result={searchResult} 
+              onClose={() => setSearchResult(null)}
+              onAdd={() => useSearchResult(searchResult)}
+              addLabel="Select Location"
+          />
       )}
     </div>
   );
@@ -919,9 +1302,9 @@ const App = () => {
     }, []);
   
     return (
-      <div className="bg-brand-bg min-h-screen text-brand-dark font-sans selection:bg-brand-primary/30 pb-20 sm:pb-0">
-          <div className="max-w-md mx-auto min-h-screen bg-white shadow-2xl relative flex flex-col overflow-hidden border-x border-brand-border">
-              {isOffline && <div className="bg-brand-secondary text-white text-[10px] font-bold uppercase tracking-widest text-center py-1">Offline Mode • Changes Saved Locally</div>}
+      <div className="bg-brand-bg h-[100dvh] text-brand-dark font-sans selection:bg-brand-primary/30 flex flex-col">
+          <div className="max-w-md mx-auto w-full h-full bg-white shadow-2xl relative flex flex-col overflow-hidden border-x border-brand-border">
+              {isOffline && <div className="bg-brand-secondary text-white text-[10px] font-bold uppercase tracking-widest text-center py-1 flex-shrink-0">Offline Mode • Changes Saved Locally</div>}
               
               {/* Render Active Section */}
               <main className="flex-1 overflow-y-auto no-scrollbar scroll-smooth">
@@ -930,8 +1313,8 @@ const App = () => {
                   {activeTab === 'itinerary' && <Itinerary appState={appState} setAppState={setAppState} />}
               </main>
   
-              {/* Bottom Navigation */}
-              <nav className="absolute bottom-0 left-0 right-0 bg-white/90 backdrop-blur-md border-t border-brand-border px-6 py-4 flex justify-between items-center z-50 pb-safe">
+              {/* Bottom Navigation - Fixed at bottom of flex container */}
+              <nav className="bg-white/90 backdrop-blur-md border-t border-brand-border px-6 py-4 flex justify-between items-center z-50 pb-safe flex-shrink-0">
                   <button 
                       onClick={() => setActiveTab('voyage')} 
                       className={`flex flex-col items-center gap-1 transition-all ${activeTab === 'voyage' ? 'text-brand-dark scale-105' : 'text-brand-secondary hover:text-brand-dark'}`}

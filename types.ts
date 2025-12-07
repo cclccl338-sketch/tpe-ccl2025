@@ -87,6 +87,20 @@ export interface ShortlistItem {
   isLoading?: boolean;
 }
 
+export interface LocationSearchResult {
+  name: string;
+  address: string;
+  mapUrl: string;
+  description: {
+    en: string;
+    zh: string;
+  };
+  funThings: {
+    en: string[];
+    zh: string[];
+  };
+}
+
 export interface WeatherCardData {
   date: string;
   dayName: string; // e.g., "Monday"
@@ -98,6 +112,7 @@ export interface WeatherCardData {
 
 export interface TransportLeg {
   id: string;
+  date?: string; // Optional date for the transfer
   label: string;
   method: string;
   cost: number;
